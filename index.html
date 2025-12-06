@@ -1,14 +1,223 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>p5 Stone Path</title>
-
-  <!-- p5.js 불러오기 -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <meta charset="UTF-8">
+    <title>Minimalist Gallery</title>
+    <style>
+        /* 텍스트 요소 제거 및 스크롤 방지 */
+        body { margin: 0; overflow: hidden; background-color: #ffffff; }
+    </style>
 </head>
 <body>
-  <script src="sketch.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+
+    <script>
+        // --- 1. 씬 설정 (화이트 미니멀리즘) ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff); 
+        scene.fog = new THREE.Fog(0xffffff, 2, 30); // 깊이감
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1.6, 5); // 초기 위치
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+        document.body.appendChild(renderer.domElement);
+
+        // --- 2. 조명 ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.9); 
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- 3. 공간 구성 ---
+        // 바닥 그리드만 남겨 미니멀함 강조
+        const gridHelper = new THREE.GridHelper(100, 100, 0xcccccc, 0xeeeeee);
+        scene.add(gridHelper);
+
+        // 바닥 (그림자용 투명 바닥)
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floorMat = new THREE.ShadowMaterial({ opacity: 0.05 }); 
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // --- 4. 그림 생성 ---
+        const artworks = [];
+        let activeArtwork = null; // 현재 보고 있는 그림
+
+        function createPainting(imageUrl, x, y, z, rotY) {
+            const group = new THREE.Group();
+
+            // 프레임 (아주 얇은 검정 라인)
+            const frameGeo = new THREE.BoxGeometry(2.05, 3.05, 0.05);
+            const frameMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const frame = new THREE.Mesh(frameGeo, frameMat);
+            group.add(frame);
+
+            // 그림 (흑백처리된 이미지)
+            const textureLoader = new THREE.TextureLoader();
+            const texture = textureLoader.load(imageUrl);
+            const canvasGeo = new THREE.PlaneGeometry(2, 3);
+            const canvasMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.FrontSide });
+            const canvas = new THREE.Mesh(canvasGeo, canvasMat);
+            canvas.position.z = 0.03; // 프레임보다 살짝 앞
+            group.add(canvas);
+
+            // 배치
+            group.position.set(x, y, z);
+            group.rotation.y = rotY;
+
+            // 그림자
+            frame.castShadow = true;
+
+            // 원래 위치 저장
+            group.userData = {
+                originalPos: group.position.clone(),
+                originalRot: group.rotation.clone(),
+                id: Math.random() // 고유 ID
+            };
+
+            scene.add(group);
+            artworks.push(group);
+        }
+
+        // 이미지 생성 (흑백 필터 적용된 URL)
+        createPainting('https://picsum.photos/id/237/400/600?grayscale', -3, 1.8, 0, Math.PI / 2);
+        createPainting('https://picsum.photos/id/26/400/600?grayscale', 0, 1.8, -4, 0);
+        createPainting('https://picsum.photos/id/1003/400/600?grayscale', 3, 1.8, 0, -Math.PI / 2);
+
+
+        // --- 5. 컨트롤 ---
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 2;
+        controls.maxDistance = 10;
+        // 바닥 밑으로 카메라가 내려가지 않게 제한 (바닥 뚫림 방지 보조)
+        controls.maxPolarAngle = Math.PI / 2 - 0.05; 
+
+
+        // --- 6. 인터랙션 로직 (수정됨) ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        window.addEventListener('click', (e) => {
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(artworks, true);
+
+            if (intersects.length > 0) {
+                // 클릭된 그림 찾기
+                let target = intersects[0].object;
+                while(target.parent && target.parent.type !== 'Scene') {
+                    target = target.parent;
+                }
+
+                // [로직 변경]
+                // 1. 이미 확대된 그림을 또 클릭했다면? -> 넣기 (Toggle OFF)
+                if (activeArtwork === target) {
+                    returnArtwork(target);
+                } 
+                // 2. 다른 그림을 클릭했다면? -> 기존 것 넣고, 새 것 뺴기
+                else {
+                    if (activeArtwork) returnArtwork(activeArtwork);
+                    viewArtwork(target);
+                }
+            } else {
+                // 배경 클릭 시 -> 기존 것 넣기
+                if (activeArtwork) returnArtwork(activeArtwork);
+            }
+        });
+
+        // 🟢 그림 확대 (화면 정면 고정 방식)
+        function viewArtwork(group) {
+            activeArtwork = group;
+            controls.enabled = false; // 시점 잠금
+
+            // [계산 수정] 카메라 위치 기준 + 카메라가 보는 방향으로 2.5m 앞
+            // 이 방식은 카메라가 바닥을 보든 위를 보든 상관없이 "내 눈앞"에 둡니다.
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction); // 카메라가 보는 방향 벡터 가져오기
+            
+            // 목표 위치 = 카메라위치 + (방향 * 거리)
+            const targetPos = camera.position.clone().add(direction.multiplyScalar(2.5));
+
+            // 1. 위치 이동
+            gsap.to(group.position, {
+                x: targetPos.x,
+                y: targetPos.y,
+                z: targetPos.z,
+                duration: 1.0,
+                ease: "power2.out"
+            });
+
+            // 2. 회전 이동 (카메라와 똑같은 각도로 회전시켜 평면처럼 보이게 함)
+            // Quaternion을 바로 복사하는 것이 가장 정확하게 정면을 봅니다.
+            // GSAP 애니메이션을 위해 Euler로 변환하여 적용
+            const targetRot = new THREE.Euler().setFromQuaternion(camera.quaternion);
+
+            gsap.to(group.rotation, {
+                x: targetRot.x,
+                y: targetRot.y,
+                z: targetRot.z,
+                duration: 1.0,
+                ease: "power2.out"
+            });
+        }
+
+        // ⚪ 그림 복귀
+        function returnArtwork(group) {
+            if (!group) return;
+
+            // 원래 위치로 복귀
+            gsap.to(group.position, {
+                x: group.userData.originalPos.x,
+                y: group.userData.originalPos.y,
+                z: group.userData.originalPos.z,
+                duration: 0.8,
+                ease: "power2.inOut"
+            });
+
+            // 원래 회전으로 복귀
+            gsap.to(group.rotation, {
+                x: group.userData.originalRot.x,
+                y: group.userData.originalRot.y,
+                z: group.userData.originalRot.z,
+                duration: 0.8,
+                ease: "power2.inOut",
+                onComplete: () => {
+                    if (activeArtwork === group) { // 현재 활성 상태였던 것만 해제
+                        activeArtwork = null;
+                        controls.enabled = true; // 시점 잠금 해제
+                    }
+                }
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
 </body>
 </html>
